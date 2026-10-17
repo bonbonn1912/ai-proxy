@@ -1,0 +1,27 @@
+{
+  "name": "ai-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lokaler Reverse-Proxy für Microservices über mehrere Umgebungen mit Basic-Auth-Zugangsdaten aus KeePass (KDBX4)",
+  "type": "module",
+  "bin": {
+    "ai-proxy": "bin/ai-proxy.js"
+  },
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "start": "node bin/ai-proxy.js",
+    "check": "node bin/ai-proxy.js --check",
+    "test": "node --test"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "hash-wasm": "4.12.0",
+    "kdbxweb": "2.1.1"
+  },
+  "overrides": {
+    "@xmldom/xmldom": "0.8.15"
+  }
+}

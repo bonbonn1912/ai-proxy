@@ -1,0 +1,51 @@
+{
+  "$comment": "Beispiel – nach connection.json (und headers.example.json nach headers.json) kopieren und anpassen. Passwörter gehören NICHT hier hinein, sondern in die KeePass-Datenbank.",
+  "listen": {
+    "host": "127.0.0.1",
+    "port": 8075,
+    "mcpPort": 8076
+  },
+  "keepass": {
+    "database": "./zugangsdaten.kdbx",
+    "keyFile": null
+  },
+  "upstream": {
+    "timeoutMs": 30000
+  },
+  "mcp": true,
+  "headersFile": "./headers.json",
+  "environments": {
+    "dev": {
+      "kunden": {
+        "url": "https://kunden.dev.example.com/api",
+        "auth": {
+          "username": "svc-kunden-dev",
+          "entry": { "group": "Dev/Services", "title": "kunden" }
+        }
+      },
+      "bestellungen": {
+        "url": "https://bestellungen.dev.example.com",
+        "auth": {
+          "entry": { "uuid": "3F2504E0-4F89-11D3-9A0C-0305E82C3301" }
+        }
+      },
+      "katalog": "http://localhost:9003/katalog"
+    },
+    "test": {
+      "kunden": {
+        "url": "https://kunden.test.example.com/api",
+        "timeoutMs": 60000,
+        "auth": {
+          "entry": { "group": ["Test", "Services"], "title": "kunden" }
+        }
+      },
+      "bestellungen": {
+        "url": "https://bestellungen.test.example.com",
+        "auth": {
+          "username": "svc-bestellungen-test",
+          "entry": { "title": "bestellungen-test" }
+        }
+      }
+    }
+  }
+}
