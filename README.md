@@ -112,6 +112,7 @@ wieder her.
     "dev": {
       "kunden": {
         "url": "https://kunden.dev.example.com/api",
+        "tls": { "rejectUnauthorized": true },
         "auth": {
           "username": "svc-kunden-dev",
           "entry": { "group": "Dev/Services", "title": "kunden" }
@@ -146,7 +147,9 @@ wieder her.
 | `upstream.timeoutMs` | Leerlauf-Timeout zum Upstream (Verbindungsaufbau und Pausen zwischen Daten) | `30000` |
 | `mcp` | MCP-Listener auf `listen.mcpPort` starten (`false` = nur der Proxy-Listener) | `true` |
 | `headersFile` | JSON-Datei mit Standard-Headern für jeden weitergeleiteten Request, relativ zur `connection.json` (siehe unten) | keine |
-| `environments.<env>.<service>` | URL als String oder Objekt `{ url, auth?, timeoutMs? }` | – |
+| `environments.<env>.<service>` | URL als String oder Objekt `{ url, auth?, timeoutMs?, tls? }` | – |
+| `….<service>.tls.rejectUnauthorized` | nur `https://`: Zertifikat und Hostname des Upstreams prüfen (siehe [TLS](#tls-und-private-zertifikate)) | `true` |
+| `….<service>.tls.caFile` | nur `https://`: PEM-Datei mit privater CA, relativ zur `connection.json`; **zusätzlich** zu den eingebauten Root-CAs | keine |
 
 Regeln:
 
@@ -162,6 +165,67 @@ Regeln:
   sieht die Upstream-URL nicht und hängt deshalb nie selbst einen Context-Path an.
 - Services ohne `auth` werden ohne eigene Authentifizierung weitergeleitet.
   Ein vom Client mitgeschickter `Authorization`-Header bleibt dann erhalten.
+
+### TLS und private Zertifikate
+
+Für `https://`-Services prüft der Proxy standardmäßig **Zertifikatskette und
+Hostname** (wie Node selbst). Ein Service mit einem Zertifikat aus einer privaten
+(Firmen-)CA schlägt deshalb zunächst mit `502` fehl, z. B.
+`UNABLE_TO_VERIFY_LEAF_SIGNATURE … private CA per tls.caFile hinterlegen`.
+Die Einstellung gilt **pro Service**:
+
+```jsonc
+"kunden": {
+  "url": "https://kunden.dev.intern/api",
+  // Empfohlen: der privaten CA vertrauen. Prüfung von Kette und Hostname bleibt an.
+  "tls": { "caFile": "./certs/firmen-ca.pem" }
+},
+"altsystem": {
+  "url": "https://altsystem.dev.intern",
+  // Notlösung: keine Prüfung. Nur für diesen einen Service.
+  "tls": { "rejectUnauthorized": false }
+}
+```
+
+(`jsonc` nur zur Erklärung – in der echten `connection.json` sind keine Kommentare
+erlaubt; dafür gibt es `"$comment"`, auch innerhalb von `tls`.)
+
+- **`tls.caFile` (empfohlen):** PEM-Datei mit einem oder mehreren Zertifikaten
+  (`-----BEGIN CERTIFICATE-----`), z. B. Root- und Zwischen-CA. Der Pfad wird relativ
+  zur `connection.json` aufgelöst. Die Zertifikate werden **zusätzlich** zu den in
+  Node eingebauten Root-CAs (`tls.rootCertificates`) verwendet, nicht statt ihrer.
+  Der Hostname der `url` muss weiterhin im Zertifikat stehen (Subject Alternative
+  Name); ein Zertifikat für einen anderen Host wird abgewiesen. Ein selbstsigniertes
+  Serverzertifikat kann man ebenfalls direkt als `caFile` eintragen.
+  - Die Datei wird beim Start gelesen und geprüft – **vor** der Abfrage des
+    Master-Passworts. Fehlt sie, ist sie kein gültiges PEM-Zertifikat oder enthält sie
+    einen privaten Schlüssel, bricht der Start mit einer Fehlermeldung ab.
+  - `NODE_EXTRA_CA_CERTS` gilt weiter für alle Services **ohne** `caFile`. Für einen
+    Service mit `caFile` zählen nur die eingebauten Root-CAs und die Datei.
+- **`tls.rejectUnauthorized: false` (Notlösung):** Die Verbindung ist dann zwar
+  **verschlüsselt, aber die Gegenstelle ist nicht authentifiziert.** Weder Kette noch
+  Hostname werden geprüft. Wer sich in den Netzweg einklinkt (falsches DNS, WLAN,
+  kompromittierter Host), kann sich als der Service ausgeben und bekommt die
+  **Basic-Auth-Zugangsdaten aus KeePass** im Klartext zu sehen. Deshalb nach
+  Möglichkeit die CA besorgen und `caFile` verwenden.
+  - Die Ausnahme gilt ausschließlich für den Service, bei dem sie steht. Der Proxy
+    setzt weder `NODE_TLS_REJECT_UNAUTHORIZED` noch ändert er den globalen Agent.
+    Jeder https-Service hat einen eigenen Verbindungspool. Eine ungeprüfte Verbindung
+    wird deshalb nie für einen geprüften Service wiederverwendet, auch nicht bei
+    gleichem Host und Port.
+  - Beim Start erscheint eine `WARNUNG` auf stderr, in der Routing-Übersicht ist der
+    Service mit `[TLS OHNE Prüfung]` markiert.
+  - `connection.example.json` setzt das für keinen Service, und der Proxy aktiviert
+    es nie von selbst.
+- `caFile` zusammen mit `rejectUnauthorized: false` wird als Widerspruch abgelehnt
+  (ohne Prüfung würde die CA nie benutzt).
+- Bei `http://`-Services gibt es kein TLS; ein nicht leeres `tls` wird dort als
+  Konfigurationsfehler gemeldet, damit niemand eine Absicherung annimmt, die es nicht
+  gibt. Unbekannte Schlüssel (z. B. Tippfehler `rejectUnauthorised`) und falsche
+  Typen (`"false"` als String) werden ebenfalls abgelehnt.
+- Wer `createProxy` programmatisch mit `validateConfig(...)` nutzt, muss vorher
+  `await loadCaFiles(config)` aufrufen (`loadConfig` erledigt das selbst). Sonst wirft
+  `createProxy`, statt `caFile` stillschweigend zu ignorieren.
 
 ### Standard-Header (`headers.json`)
 
@@ -320,8 +384,10 @@ Proxy- und MCP-Listener sind getrennt; es gibt keine Weiterleitung zwischen beid
   - Bricht der Upstream **während** der Antwort ab, wird die Client-Verbindung hart
     geschlossen, damit der Client den Abbruch bemerkt.
   - Bricht der **Client** ab, wird auch der Upstream-Request abgebrochen.
-- TLS: Es gelten die Zertifikatsprüfung und die CA-Liste von Node. Firmeneigene CAs
-  bindet man über `NODE_EXTRA_CA_CERTS=/pfad/ca.pem` ein.
+- TLS: Standardmäßig prüft der Proxy Zertifikat und Hostname mit der CA-Liste von
+  Node. Private CAs bindet man pro Service über `tls.caFile` ein (siehe
+  [TLS und private Zertifikate](#tls-und-private-zertifikate)), global auch über
+  `NODE_EXTRA_CA_CERTS=/pfad/ca.pem`.
 
 Nicht unterstützt: WebSockets/`Upgrade`, `CONNECT`, HTTP/2 zum Client,
 Request- und Response-Trailer, das Weiterreichen von `1xx`-Zwischenantworten
@@ -535,6 +601,19 @@ Die Tests nutzen nur `node:test`, ohne weitere Abhängigkeiten. Sie decken ab:
     Durchreichen ohne `auth`
   - Status und `Set-Cookie`, Redirects, HEAD/204, 8-MiB-Streaming in beide Richtungen, SSE
   - 502/504, Client- und Upstream-Abbrüche, synchrone Fehler ohne Absturz
+- **TLS** gegen echte lokale HTTPS-Server mit Testzertifikaten aus
+  `test/fixtures/tls/`. Das sind öffentliche Demo-Schlüssel, gültig von 2000 bis 9999,
+  damit die Tests nicht vom Datum abhängen. Neu erzeugen mit
+  `test/fixtures/tls/generate.sh` (nur zur Entwicklung, OpenSSL ≥ 3.4):
+  - private CA ohne `caFile` → `502`, beim Upstream kommt nichts an (auch kein Basic Auth)
+  - passende `caFile` → `200` inkl. Basic Auth; fremde CA → `502`
+  - vertraute CA, aber falscher Hostname → `502` (`ERR_TLS_CERT_ALTNAME_INVALID`)
+  - `rejectUnauthorized: false` → `200`, nur für diesen Service, keine globale Lockerung
+  - geprüfter Service nach ungeprüftem auf demselben Endpunkt → weiterhin `502`
+    (kein gemeinsamer Verbindungspool)
+  - Validierung (unbekannte Schlüssel, Typen, `http://`, Widerspruch), relative Pfade,
+    fehlende/leere/ungültige Datei, privater Schlüssel in der Datei, Abbruch vor der
+    Passwortabfrage, `createProxy` ohne geladene CA wirft
 - MCP: `initialize`, `notifications/initialized`, `ping`, `tools/list`, `tools/call`
   für beide Tools, unbekannte Umgebung, unbekanntes Tool, Transportfehler, exakte
   Host- und Origin-Prüfung je Listener-Port, getrennte Listener ohne gegenseitige
@@ -557,7 +636,7 @@ Die Tests nutzen nur `node:test`, ohne weitere Abhängigkeiten. Sie decken ab:
 ```
 bin/ai-proxy.js          CLI-Einstieg, Signal-Handling
 src/cli.js               Ablauf: Konfiguration → Passwort → KeePass → Server
-src/config.js            Laden und Validieren von connection.json und headers.json
+src/config.js            Laden und Validieren von connection.json, headers.json und tls.caFile
 src/keepass.js           KDBX öffnen (kdbxweb + Argon2 via hash-wasm), Einträge auflösen
 src/prompt.js            verdeckte Terminal-Eingabe in einen Buffer
 src/secret.js            SecretValue (maskiert, nullbar), Basic-Header ohne Strings
@@ -567,4 +646,5 @@ GEMINI.md                Ablauf für Gemini als Kontextdatei
 connection.example.json  Beispielkonfiguration
 headers.example.json     Beispiel für Standard-Header (headersFile)
 test/                    node:test-Suite
+test/fixtures/tls/       öffentliche Test-CA und -Zertifikate (nur für die Tests), generate.sh
 ```

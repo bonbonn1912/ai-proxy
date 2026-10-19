@@ -136,7 +136,12 @@ test('connection.example.json und headers.example.json sind gültig', async () =
   const example = new URL('../connection.example.json', import.meta.url).pathname;
   const c = validateConfig(JSON.parse(await readFile(example, 'utf8')), path.dirname(example));
   assert.equal(c.needsKeepass, true);
-  assert.deepEqual(c.environments.map((e) => e.name), ['dev', 'test']);
+  assert.deepEqual(c.environments.map((e) => e.name), ['dev', 'test', 'prod']);
+  for (const env of c.environments) {
+    assert.deepEqual(env.services.map((s) => s.name), ['kunden', 'bestellungen', 'katalog', 'zahlungen', 'versand'], env.name);
+    // Kein Service im Beispiel lockert TLS oder verweist auf eine (nicht vorhandene) CA-Datei.
+    for (const s of env.services) assert.deepEqual(s.tls, { rejectUnauthorized: true, caFile: null, ca: null }, `${env.name}/${s.name}`);
+  }
   assert.deepEqual([c.listen.port, c.listen.mcpPort], [8075, 8076]);
   assert.equal(c.headersFile, path.join(path.dirname(example), 'headers.json'));
   const headers = await loadHeadersFile(new URL('../headers.example.json', import.meta.url).pathname);

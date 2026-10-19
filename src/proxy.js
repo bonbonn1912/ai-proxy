@@ -1,5 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
+import tls from 'node:tls';
 import { pipeline } from 'node:stream';
 import { NAME_RE } from './config.js';
 import { createMcpHandler, rpcError, sendJson } from './mcp.js';
@@ -141,6 +142,27 @@ export function advertisedBaseUrl(listenHost, port) {
   return `http://${formatHost(h)}:${port}`;
 }
 
+/**
+ * TLS-Optionen für einen https-Service; werden sowohl dem Agent als auch jedem
+ * Request mitgegeben. Nie global (kein NODE_TLS_REJECT_UNAUTHORIZED, kein globalAgent).
+ * @param {{rejectUnauthorized: boolean, ca: ReadonlyArray<string> | null} | null} tlsConfig
+ */
+export function tlsOptionsFor(tlsConfig) {
+  const opts = { rejectUnauthorized: tlsConfig?.rejectUnauthorized !== false };
+  // Einmal pro Service aufgebaut statt pro Verbindung (tls.ca enthält auch die Node-Root-CAs).
+  if (tlsConfig?.ca) opts.secureContext = tls.createSecureContext({ ca: [...tlsConfig.ca] });
+  return opts;
+}
+
+const CERT_ERROR_RE = /CERT|SELF_SIGNED|UNABLE_TO_(GET_ISSUER|VERIFY)|ALTNAME|HOSTNAME/;
+
+function tlsHint(err) {
+  if (!CERT_ERROR_RE.test(err.code ?? '')) return '';
+  return err.code === 'ERR_TLS_CERT_ALTNAME_INVALID'
+    ? '; Zertifikat passt nicht zum Hostnamen der URL'
+    : '; Zertifikat nicht vertrauenswürdig – private CA per tls.caFile hinterlegen';
+}
+
 /** Pfad ohne Query. */
 function pathOf(rawUrl) {
   const q = rawUrl.indexOf('?');
@@ -179,21 +201,28 @@ function closeServer(server) {
  */
 export function createProxy({ config, credentials = new Map(), log = () => {}, version = '0.0.0' }) {
   const routes = new Map();
+  const httpAgent = new http.Agent({ keepAlive: true });
+  const httpsAgents = [];
   for (const env of config.environments) {
     const services = new Map();
     for (const svc of env.services) {
       const key = `${env.name}/${svc.name}`;
       const secret = credentials.get(key) ?? null;
       if (svc.auth && !secret) throw new Error(`Für ${key} sind keine Zugangsdaten geladen`);
-      services.set(svc.name, { ...svc, key, secret });
+      if (svc.tls?.caFile && !svc.tls.ca) throw new Error(`Für ${key} ist tls.caFile ${svc.tls.caFile} nicht geladen (Konfiguration mit loadConfig() oder loadCaFiles() laden)`);
+      let agent = httpAgent;
+      let tlsOptions = {};
+      if (svc.protocol === 'https:') {
+        tlsOptions = tlsOptionsFor(svc.tls);
+        // Eigener Pool je Service: Ein Socket, der ohne Prüfung aufgebaut wurde, wird
+        // nie für einen Service mit Prüfung wiederverwendet (auch nicht die TLS-Session).
+        agent = new https.Agent({ keepAlive: true, ...tlsOptions });
+        httpsAgents.push(agent);
+      }
+      services.set(svc.name, { ...svc, key, secret, agent, tlsOptions });
     }
     routes.set(env.name, services);
   }
-
-  const agents = {
-    'http:': new http.Agent({ keepAlive: true }),
-    'https:': new https.Agent({ keepAlive: true }),
-  };
 
   const server = http.createServer({ requestTimeout: 0 }, (req, res) => handle(req, res));
   // Lange Up-/Downloads nicht abbrechen; Leerlauf wird pro Upstream über timeoutMs begrenzt.
@@ -292,7 +321,8 @@ export function createProxy({ config, credentials = new Map(), log = () => {}, v
         method: req.method,
         path,
         headers,
-        agent: agents[svc.protocol],
+        agent: svc.agent,
+        ...svc.tlsOptions,
         timeout: svc.timeoutMs,
         setHost: false,
       });
@@ -328,7 +358,7 @@ export function createProxy({ config, credentials = new Map(), log = () => {}, v
       const timeout = err.code === 'ETIMEDOUT';
       const status = timeout ? 504 : 502;
       finishLog(status, err.code ?? err.message);
-      sendError(res, status, timeout ? `Zeitüberschreitung beim Upstream ${svc.url}` : `Upstream ${svc.url} nicht erreichbar (${err.code ?? err.message})`);
+      sendError(res, status, timeout ? `Zeitüberschreitung beim Upstream ${svc.url}` : `Upstream ${svc.url} nicht erreichbar (${err.code ?? err.message})${tlsHint(err)}`);
     });
 
     upstream.on('response', (up) => {
@@ -394,8 +424,7 @@ export function createProxy({ config, credentials = new Map(), log = () => {}, v
   /** Beide Server stoppen (auch nicht lauschende), Verbindungen schließen, Geheimnisse nullen. */
   async function close() {
     await Promise.all([server, mcpServer].filter(Boolean).map(closeServer));
-    agents['http:'].destroy();
-    agents['https:'].destroy();
+    for (const agent of [httpAgent, ...httpsAgents]) agent.destroy();
     for (const services of routes.values()) for (const svc of services.values()) svc.secret?.dispose();
   }
 

@@ -88,6 +88,13 @@ export async function main(argv, { stdout = process.stdout, stderr = process.std
     }
     throw err;
   }
+  for (const env of config.environments) {
+    for (const svc of env.services) {
+      if (svc.tls?.rejectUnauthorized === false) {
+        errOut(`WARNUNG: ${env.name}/${svc.name}: TLS-Zertifikatsprüfung ist ausgeschaltet (tls.rejectUnauthorized: false). Verschlüsselt, aber die Gegenstelle ist nicht authentifiziert; besser tls.caFile verwenden.`);
+      }
+    }
+  }
 
   let credentials = new Map();
   if (config.needsKeepass) {
@@ -130,10 +137,16 @@ export async function main(argv, { stdout = process.stdout, stderr = process.std
   out('Routing per X-Proxy-Environment / X-Proxy-Service:');
   for (const env of config.environments) {
     for (const svc of env.services) {
-      out(`  ${env.name} / ${svc.name}  ->  ${svc.url}${svc.auth ? '  [Basic Auth]' : ''}`);
+      out(`  ${env.name} / ${svc.name}  ->  ${svc.url}${svc.auth ? '  [Basic Auth]' : ''}${tlsLabel(svc.tls)}`);
     }
   }
   return { exitCode: 0, proxy, address, mcpAddress };
+}
+
+function tlsLabel(tlsConfig) {
+  if (tlsConfig?.rejectUnauthorized === false) return '  [TLS OHNE Prüfung]';
+  if (tlsConfig?.caFile) return `  [TLS-CA: ${tlsConfig.caFile}]`;
+  return '';
 }
 
 async function unlock(config, prompt, errOut) {

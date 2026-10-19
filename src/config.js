@@ -1,6 +1,8 @@
+import { X509Certificate } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { validateHeaderName, validateHeaderValue } from 'node:http';
 import path from 'node:path';
+import tls from 'node:tls';
 
 export class ConfigError extends Error {
   constructor(message) {
@@ -39,10 +41,72 @@ export async function loadConfig(file) {
   } catch (err) {
     throw new ConfigError(`Konfigurationsdatei ${abs} ist kein gültiges JSON: ${err.message}`);
   }
-  const config = validateConfig(json, path.dirname(abs));
+  const config = await loadCaFiles(validateConfig(json, path.dirname(abs)));
   if (!config.headersFile) return config;
   const defaultHeaders = await loadHeadersFile(config.headersFile);
   return Object.freeze({ ...config, defaultHeaders });
+}
+
+/**
+ * Liest alle `tls.caFile` der Services und liefert eine neue Konfiguration, in der
+ * `tls.ca` die eingebauten Root-CAs von Node **plus** die geladenen Zertifikate enthält.
+ * `loadConfig` ruft das selbst auf; wer `validateConfig` direkt nutzt, muss es vor
+ * `createProxy` aufrufen (sonst wirft `createProxy`).
+ * @param {ReturnType<typeof validateConfig>} config
+ */
+export async function loadCaFiles(config) {
+  const cache = new Map();
+  const errors = [];
+  const environments = [];
+  for (const env of config.environments) {
+    const services = [];
+    for (const svc of env.services) {
+      if (!svc.tls?.caFile || svc.tls.ca) {
+        services.push(svc);
+        continue;
+      }
+      if (!cache.has(svc.tls.caFile)) cache.set(svc.tls.caFile, await readCaFile(svc.tls.caFile).catch((e) => e));
+      const loaded = cache.get(svc.tls.caFile);
+      if (loaded instanceof Error) {
+        errors.push(`environments.${env.name}.${svc.name}.tls.caFile: ${loaded.message}`);
+        services.push(svc);
+        continue;
+      }
+      services.push(Object.freeze({ ...svc, tls: Object.freeze({ ...svc.tls, ca: loaded }) }));
+    }
+    environments.push(Object.freeze({ ...env, services: Object.freeze(services) }));
+  }
+  if (errors.length > 0) throw new ConfigError(`Ungültige CA-Datei:\n  - ${errors.join('\n  - ')}`);
+  return Object.freeze({ ...config, environments: Object.freeze(environments) });
+}
+
+const PEM_BLOCK_RE = /-----BEGIN ([A-Z0-9 ]+)-----\r?\n[\s\S]*?-----END \1-----/g;
+
+/**
+ * Liest eine PEM-Datei mit einem oder mehreren CA-Zertifikaten.
+ * @returns {Promise<ReadonlyArray<string>>} Node-Root-CAs + Zertifikate aus der Datei
+ */
+async function readCaFile(file) {
+  let text;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch (err) {
+    throw new Error(`${file} kann nicht gelesen werden: ${err.code ?? err.message}`);
+  }
+  const certs = [];
+  for (const [block, label] of text.matchAll(PEM_BLOCK_RE)) {
+    if (label.includes('PRIVATE KEY')) throw new Error(`${file} enthält einen privaten Schlüssel; dort gehört nur das CA-Zertifikat hin`);
+    if (label !== 'CERTIFICATE') continue;
+    try {
+      new X509Certificate(block);
+    } catch (err) {
+      throw new Error(`${file} enthält ein ungültiges Zertifikat (${err.code ?? err.message})`);
+    }
+    certs.push(block);
+  }
+  if (certs.length === 0) throw new Error(`${file} enthält kein PEM-Zertifikat (-----BEGIN CERTIFICATE-----)`);
+  // Additiv: Ein eigenes `ca` ersetzt bei Node sonst die eingebauten Root-CAs.
+  return Object.freeze([...tls.rootCertificates, ...certs]);
 }
 
 /** Header, die der Proxy selbst verwaltet, die nur für eine Verbindung gelten oder Zugangsdaten tragen. */
@@ -245,7 +309,7 @@ export function validateConfig(json, baseDir = process.cwd()) {
       const services = [];
       for (const [svcName, svcDef] of Object.entries(envDef)) {
         if (isPlainObject(svcDef) && svcDef.auth !== undefined && svcDef.auth !== null) authRequested = true;
-        const svc = validateService(svcName, svcDef, `${envWhere}.${svcName}`, timeoutMs, err);
+        const svc = validateService(svcName, svcDef, `${envWhere}.${svcName}`, timeoutMs, baseDir, err);
         if (svc) services.push(svc);
       }
       environments.push(Object.freeze({ name: envName, services: Object.freeze(services) }));
@@ -272,14 +336,14 @@ export function validateConfig(json, baseDir = process.cwd()) {
   });
 }
 
-function validateService(name, def, where, defaultTimeout, err) {
+function validateService(name, def, where, defaultTimeout, baseDir, err) {
   if (!NAME_RE.test(name)) err(where, 'ungültiger Service-Name (erlaubt: A-Z a-z 0-9 . _ ~ -, nicht mit Punkt beginnend)');
   if (typeof def === 'string') def = { url: def };
   if (!isPlainObject(def)) {
     err(where, 'muss ein Objekt (oder eine URL als String) sein');
     return null;
   }
-  checkKeys(def, ['url', 'auth', 'timeoutMs', '$comment'], where, err);
+  checkKeys(def, ['url', 'auth', 'timeoutMs', 'tls', '$comment'], where, err);
 
   let url = null;
   if (typeof def.url !== 'string' || def.url.trim() === '') {
@@ -309,6 +373,8 @@ function validateService(name, def, where, defaultTimeout, err) {
     auth = validateAuth(def.auth, `${where}.auth`, err);
   }
 
+  const tlsOpts = validateTls(def.tls, url, `${where}.tls`, baseDir, err);
+
   if (!url) return null;
   // Basis-Pfad ohne abschließenden Slash; der Rest-Pfad des Requests wird roh angehängt.
   const basePath = url.pathname.replace(/\/+$/, '');
@@ -322,8 +388,45 @@ function validateService(name, def, where, defaultTimeout, err) {
     basePath,
     timeoutMs,
     auth,
+    tls: tlsOpts,
   });
 }
+
+/**
+ * TLS-Einstellungen eines Services. Standard: Zertifikat und Hostname werden geprüft.
+ * @returns {null | Readonly<{rejectUnauthorized: boolean, caFile: string | null, ca: null}>} null bei http://
+ */
+function validateTls(def, url, where, baseDir, err) {
+  const isHttps = url?.protocol === 'https:';
+  if (def === undefined || def === null) return isHttps ? DEFAULT_TLS : null;
+  if (!isPlainObject(def)) {
+    err(where, 'muss ein Objekt { "rejectUnauthorized"?: boolean, "caFile"?: "pfad.pem" } sein');
+    return null;
+  }
+  checkKeys(def, ['rejectUnauthorized', 'caFile', '$comment'], where, err);
+  const keys = Object.keys(def).filter((k) => k !== '$comment');
+  if (url && !isHttps) {
+    if (keys.length > 0) err(where, 'gilt nur für https://-URLs; bei http:// gibt es kein TLS (Eintrag entfernen oder URL auf https:// ändern)');
+    return null;
+  }
+  let rejectUnauthorized = true;
+  if (def.rejectUnauthorized !== undefined) {
+    if (typeof def.rejectUnauthorized !== 'boolean') err(`${where}.rejectUnauthorized`, 'muss true oder false sein');
+    else rejectUnauthorized = def.rejectUnauthorized;
+  }
+  let caFile = null;
+  if (def.caFile !== undefined) {
+    if (typeof def.caFile !== 'string' || def.caFile.trim() === '') err(`${where}.caFile`, 'muss ein Pfad (String) zu einer PEM-Datei sein');
+    else caFile = path.resolve(baseDir, def.caFile);
+  }
+  if (caFile && !rejectUnauthorized) {
+    err(where, '„caFile“ und „rejectUnauthorized: false“ widersprechen sich (ohne Prüfung wird die CA nie benutzt); eines davon entfernen');
+  }
+  if (rejectUnauthorized && !caFile) return DEFAULT_TLS;
+  return Object.freeze({ rejectUnauthorized, caFile, ca: null });
+}
+
+const DEFAULT_TLS = Object.freeze({ rejectUnauthorized: true, caFile: null, ca: null });
 
 function validateAuth(auth, where, err) {
   if (!isPlainObject(auth)) {

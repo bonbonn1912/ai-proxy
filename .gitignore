@@ -4,3 +4,5 @@ connection.json
 *.keyx
 *.key
 headers.json
+# Öffentliche Test-Schlüssel (nur für die TLS-Tests)
+!test/fixtures/tls/*.key

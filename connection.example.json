@@ -18,32 +18,160 @@
     "dev": {
       "kunden": {
         "url": "https://kunden.dev.example.com/api",
+        "tls": {
+          "$comment": "Standard (kann entfallen): Zertifikat und Hostname werden geprüft. Private CA: \"caFile\": \"./certs/firmen-ca.pem\" – siehe README, Abschnitt TLS.",
+          "rejectUnauthorized": true
+        },
         "auth": {
           "username": "svc-kunden-dev",
-          "entry": { "group": "Dev/Services", "title": "kunden" }
+          "entry": {
+            "group": "dev/Services",
+            "title": "kunden"
+          }
         }
       },
       "bestellungen": {
-        "url": "https://bestellungen.dev.example.com",
+        "url": "https://bestellungen.dev.example.com/api",
         "auth": {
-          "entry": { "uuid": "3F2504E0-4F89-11D3-9A0C-0305E82C3301" }
+          "username": "svc-bestellungen-dev",
+          "entry": {
+            "group": "dev/Services",
+            "title": "bestellungen"
+          }
         }
       },
-      "katalog": "http://localhost:9003/katalog"
+      "katalog": {
+        "url": "https://katalog.dev.example.com/api",
+        "auth": {
+          "username": "svc-katalog-dev",
+          "entry": {
+            "group": "dev/Services",
+            "title": "katalog"
+          }
+        }
+      },
+      "zahlungen": {
+        "url": "https://zahlungen.dev.example.com/api",
+        "auth": {
+          "username": "svc-zahlungen-dev",
+          "entry": {
+            "group": "dev/Services",
+            "title": "zahlungen"
+          }
+        }
+      },
+      "versand": {
+        "url": "https://versand.dev.example.com/api",
+        "auth": {
+          "username": "svc-versand-dev",
+          "entry": {
+            "group": "dev/Services",
+            "title": "versand"
+          }
+        }
+      }
     },
     "test": {
       "kunden": {
         "url": "https://kunden.test.example.com/api",
-        "timeoutMs": 60000,
         "auth": {
-          "entry": { "group": ["Test", "Services"], "title": "kunden" }
+          "username": "svc-kunden-test",
+          "entry": {
+            "group": "test/Services",
+            "title": "kunden"
+          }
         }
       },
       "bestellungen": {
-        "url": "https://bestellungen.test.example.com",
+        "url": "https://bestellungen.test.example.com/api",
         "auth": {
           "username": "svc-bestellungen-test",
-          "entry": { "title": "bestellungen-test" }
+          "entry": {
+            "group": "test/Services",
+            "title": "bestellungen"
+          }
+        }
+      },
+      "katalog": {
+        "url": "https://katalog.test.example.com/api",
+        "auth": {
+          "username": "svc-katalog-test",
+          "entry": {
+            "group": "test/Services",
+            "title": "katalog"
+          }
+        }
+      },
+      "zahlungen": {
+        "url": "https://zahlungen.test.example.com/api",
+        "auth": {
+          "username": "svc-zahlungen-test",
+          "entry": {
+            "group": "test/Services",
+            "title": "zahlungen"
+          }
+        }
+      },
+      "versand": {
+        "url": "https://versand.test.example.com/api",
+        "auth": {
+          "username": "svc-versand-test",
+          "entry": {
+            "group": "test/Services",
+            "title": "versand"
+          }
+        }
+      }
+    },
+    "prod": {
+      "kunden": {
+        "url": "https://kunden.prod.example.com/api",
+        "auth": {
+          "username": "svc-kunden-prod",
+          "entry": {
+            "group": "prod/Services",
+            "title": "kunden"
+          }
+        }
+      },
+      "bestellungen": {
+        "url": "https://bestellungen.prod.example.com/api",
+        "auth": {
+          "username": "svc-bestellungen-prod",
+          "entry": {
+            "group": "prod/Services",
+            "title": "bestellungen"
+          }
+        }
+      },
+      "katalog": {
+        "url": "https://katalog.prod.example.com/api",
+        "auth": {
+          "username": "svc-katalog-prod",
+          "entry": {
+            "group": "prod/Services",
+            "title": "katalog"
+          }
+        }
+      },
+      "zahlungen": {
+        "url": "https://zahlungen.prod.example.com/api",
+        "auth": {
+          "username": "svc-zahlungen-prod",
+          "entry": {
+            "group": "prod/Services",
+            "title": "zahlungen"
+          }
+        }
+      },
+      "versand": {
+        "url": "https://versand.prod.example.com/api",
+        "auth": {
+          "username": "svc-versand-prod",
+          "entry": {
+            "group": "prod/Services",
+            "title": "versand"
+          }
         }
       }
     }
